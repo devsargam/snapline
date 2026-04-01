@@ -231,8 +231,15 @@ class OverlayView: NSView {
       context.setLineDash(phase: 0, lengths: [])
     }
 
-    let coordText = "\(Int(point.x)), \(Int(point.y))"
-    drawLabel(coordText, at: NSPoint(x: point.x + 14, y: point.y + 14), context: context)
+    if let sr = snapRect, sr.width > 2 || sr.height > 2 {
+      let w = Int(round(sr.width))
+      let h = Int(round(sr.height))
+      let dimText = "\(w) \u{00D7} \(h)"
+      drawLabel(dimText, at: NSPoint(x: point.x + 14, y: point.y + 14), context: context)
+    } else {
+      let coordText = "\(Int(point.x)), \(Int(point.y))"
+      drawLabel(coordText, at: NSPoint(x: point.x + 14, y: point.y + 14), context: context)
+    }
   }
 
   private func drawSegmentTicks(context: CGContext, from: CGFloat, to: CGFloat, fixed: CGFloat, isHorizontal: Bool) {
