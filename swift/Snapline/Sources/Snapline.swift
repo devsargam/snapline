@@ -572,6 +572,9 @@ class SnaplineWindow: NSWindow {
 
   override func keyDown(with event: NSEvent) {
     if event.keyCode == 53 {
+      tickTimer?.invalidate()
+      tickTimer = nil
+      close()
       NSApplication.shared.terminate(nil)
     }
     super.keyDown(with: event)

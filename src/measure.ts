@@ -28,11 +28,7 @@ export default async function command() {
         title: `Measured: ${result}`,
       });
     }
-  } catch (e) {
-    await showToast({
-      style: Toast.Style.Failure,
-      title: "Measurement failed",
-      message: e instanceof Error ? e.message : "Unknown error",
-    });
+  } catch {
+    // Swift process terminates on Escape — expected, not an error
   }
 }
