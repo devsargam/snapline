@@ -166,6 +166,11 @@ class OverlayView: NSView {
   var snappedRect: NSRect?
   var tickPhase: CGFloat = 0
   var completedRects: [NSRect] = []
+  var animatingFrom: NSRect?
+  var animatingTo: NSRect?
+  var animationProgress: CGFloat = 0
+  var animationStartTime: CFTimeInterval = 0
+  static let animationDuration: CFTimeInterval = 0.25
 
   func updateSmartRect(_ newRect: NSRect?) {
     guard let newRect = newRect else {
@@ -199,6 +204,22 @@ class OverlayView: NSView {
     screenshot.draw(in: imageRect)
 
     for rect in completedRects {
+      let roundedPath = CGPath(roundedRect: rect, cornerWidth: 3, cornerHeight: 3, transform: nil)
+
+      context.setFillColor(NSColor.systemRed.withAlphaComponent(0.15).cgColor)
+      context.addPath(roundedPath)
+      context.fillPath()
+
+      context.setStrokeColor(NSColor.systemRed.cgColor)
+      context.setLineWidth(1.0)
+      context.addPath(roundedPath)
+      context.strokePath()
+
+      drawSmartBBoxLabels(context: context, rect: rect)
+    }
+    if let from = animatingFrom, let to = animatingTo {
+      let t = easeOutCubic(animationProgress)
+      let rect = lerpRect(from, to, t: t)
       let roundedPath = CGPath(roundedRect: rect, cornerWidth: 3, cornerHeight: 3, transform: nil)
 
       context.setFillColor(NSColor.systemRed.withAlphaComponent(0.15).cgColor)
@@ -404,6 +425,20 @@ class OverlayView: NSView {
     context.strokePath()
   }
 
+  private func easeOutCubic(_ t: CGFloat) -> CGFloat {
+    let p = t - 1
+    return p * p * p + 1
+  }
+
+  private func lerpRect(_ a: NSRect, _ b: NSRect, t: CGFloat) -> NSRect {
+    return NSRect(
+      x: a.origin.x + (b.origin.x - a.origin.x) * t,
+      y: a.origin.y + (b.origin.y - a.origin.y) * t,
+      width: a.width + (b.width - a.width) * t,
+      height: a.height + (b.height - a.height) * t
+    )
+  }
+
   private func drawCrosshairGuides(context: CGContext, rect: NSRect) {
     context.setStrokeColor(NSColor.systemCyan.withAlphaComponent(0.25).cgColor)
     context.setLineWidth(0.5)
@@ -516,6 +551,18 @@ class SnaplineWindow: NSWindow {
         tickDirection = true
       }
     }
+
+    if view.animatingFrom != nil, view.animatingTo != nil {
+      let elapsed = CACurrentMediaTime() - view.animationStartTime
+      let progress = min(1.0, CGFloat(elapsed / OverlayView.animationDuration))
+      view.animationProgress = progress
+      if progress >= 1.0 {
+        view.completedRects.append(view.animatingTo!)
+        view.animatingFrom = nil
+        view.animatingTo = nil
+      }
+    }
+
     view.needsDisplay = true
   }
 
@@ -565,7 +612,10 @@ class SnaplineWindow: NSWindow {
     let height = Int(round(finalRect.height))
 
     if width >= 2 || height >= 2 {
-      overlayView?.completedRects.append(finalRect)
+      overlayView?.animatingFrom = dragRect
+      overlayView?.animatingTo = finalRect
+      overlayView?.animationProgress = 0
+      overlayView?.animationStartTime = CACurrentMediaTime()
       print("\(width)x\(height)")
     }
 
