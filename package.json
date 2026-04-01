@@ -22,6 +22,15 @@
   "preferences": [
     {
       "required": false,
+      "name": "edgeTolerance",
+      "title": "Edge Tolerance",
+      "description": "Sensitivity for edge detection (higher = less sensitive, handles shadows/blur)",
+      "type": "textfield",
+      "default": "40",
+      "placeholder": "20-100"
+    },
+    {
+      "required": false,
       "name": "copyToClipboard",
       "title": "Copy to Clipboard",
       "description": "Automatically copy measurements to clipboard",

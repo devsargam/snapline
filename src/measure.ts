@@ -7,7 +7,9 @@ export default async function command() {
   try {
     const preferences = await getPreferenceValues();
 
-    const result = (await measureScreen(preferences.showCrosshair)) as unknown as string | undefined;
+    const result = (await measureScreen(preferences.showCrosshair, preferences.edgeTolerance)) as unknown as
+      | string
+      | undefined;
 
     if (!result) {
       return;

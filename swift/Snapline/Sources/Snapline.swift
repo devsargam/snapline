@@ -6,8 +6,8 @@ class PixelSampler {
   private let imageWidth: Int
   private let imageHeight: Int
   private let bytesPerRow: Int
-  private let scaleFactor: CGFloat
-  private let screenLogicalHeight: CGFloat
+  let scaleFactor: CGFloat
+  let screenLogicalHeight: CGFloat
   private let dataProvider: CGDataProvider
 
   init?(cgImage: CGImage, screen: NSScreen) {
@@ -32,9 +32,26 @@ class PixelSampler {
     )
   }
 
+  private func toLogical(px: Int, py: Int) -> NSPoint {
+    return NSPoint(
+      x: CGFloat(px) / scaleFactor,
+      y: screenLogicalHeight - CGFloat(py) / scaleFactor
+    )
+  }
+
   private func colorAtPhysical(px: Int, py: Int) -> (r: UInt8, g: UInt8, b: UInt8) {
     let offset = py * bytesPerRow + px * 4
+    guard offset >= 0, offset + 2 < bytesPerRow * imageHeight else { return (0, 0, 0) }
     return (pixelData[offset + 2], pixelData[offset + 1], pixelData[offset])
+  }
+
+  private func luminanceAt(px: Int, py: Int) -> UInt8 {
+    let c = colorAtPhysical(px: px, py: py)
+    return UInt8((Int(c.r) * 77 + Int(c.g) * 150 + Int(c.b) * 29) >> 8)
+  }
+
+  private func isDifferentLuminance(_ a: UInt8, _ b: UInt8, threshold: Int) -> Bool {
+    return abs(Int(a) - Int(b)) > threshold
   }
 
   func colorAt(logicalX: CGFloat, logicalY: CGFloat) -> (r: UInt8, g: UInt8, b: UInt8) {
@@ -109,16 +126,67 @@ class PixelSampler {
     }
     return endY
   }
+
+  func findSmartBoundingBox(in logicalRect: NSRect, tolerance: Int = 40) -> NSRect? {
+    let (leftPx, topPy) = toPhysical(logicalRect.minX, logicalRect.maxY)
+    let (rightPx, bottomPy) = toPhysical(logicalRect.maxX, logicalRect.minY)
+    guard rightPx > leftPx, bottomPy > topPy else { return nil }
+
+    let bg = colorAtPhysical(px: leftPx, py: topPy)
+
+    var minX = rightPx, maxX = leftPx, minY = bottomPy, maxY = topPy
+
+    for py in topPy...bottomPy {
+      for px in leftPx...rightPx {
+        if isDifferent(colorAtPhysical(px: px, py: py), bg, threshold: tolerance) {
+          if px < minX { minX = px }
+          if px > maxX { maxX = px }
+          if py < minY { minY = py }
+          if py > maxY { maxY = py }
+        }
+      }
+    }
+
+    guard maxX > minX, maxY > minY else { return nil }
+
+    let tl = toLogical(px: minX, py: minY)
+    let br = toLogical(px: maxX, py: maxY)
+    return NSRect(x: tl.x, y: br.y, width: br.x - tl.x, height: tl.y - br.y)
+  }
 }
 
 class OverlayView: NSView {
   var startPoint: NSPoint?
   var currentPoint: NSPoint?
+  var smartRect: NSRect?
+  var stabilizedSmartRect: NSRect?
   var screenshot: NSImage?
   var showCrosshair: Bool = true
   var mouseLocation: NSPoint = .zero
   var snappedRect: NSRect?
   var tickPhase: CGFloat = 0
+  var completedRects: [NSRect] = []
+
+  func updateSmartRect(_ newRect: NSRect?) {
+    guard let newRect = newRect else {
+      smartRect = nil
+      stabilizedSmartRect = nil
+      return
+    }
+
+    smartRect = newRect
+
+    if let prev = stabilizedSmartRect {
+      let lerp: CGFloat = 0.4
+      let x = prev.origin.x * (1 - lerp) + newRect.origin.x * lerp
+      let y = prev.origin.y * (1 - lerp) + newRect.origin.y * lerp
+      let w = prev.width * (1 - lerp) + newRect.width * lerp
+      let h = prev.height * (1 - lerp) + newRect.height * lerp
+      stabilizedSmartRect = NSRect(x: x, y: y, width: w, height: h)
+    } else {
+      stabilizedSmartRect = newRect
+    }
+  }
 
   override func draw(_ dirtyRect: NSRect) {
     super.draw(dirtyRect)
@@ -130,32 +198,76 @@ class OverlayView: NSView {
     let imageRect = NSRect(x: 0, y: 0, width: screenFrame.width, height: screenFrame.height)
     screenshot.draw(in: imageRect)
 
-    if let start = startPoint, let current = currentPoint {
-      let selectionRect = rectFromPoints(start, current)
-
-      context.setFillColor(NSColor.systemRed.withAlphaComponent(0.1).cgColor)
-      context.fill(selectionRect)
-
+    for rect in completedRects {
       context.setStrokeColor(NSColor.systemRed.cgColor)
       context.setLineWidth(1.0)
-      context.stroke(selectionRect)
+      context.stroke(rect)
+      drawSmartBBoxLabels(context: context, rect: rect)
+    }
+    if let start = startPoint, let current = currentPoint {
+      let dragRect = rectFromPoints(start, current)
 
-      drawDimensionLabels(context: context, rect: selectionRect)
+      context.setFillColor(NSColor.systemRed.withAlphaComponent(0.05).cgColor)
+      context.fill(dragRect)
+
+      context.setStrokeColor(NSColor.systemRed.withAlphaComponent(0.3).cgColor)
+      context.setLineWidth(1.0)
+      context.setLineDash(phase: 0, lengths: [4, 4])
+      context.stroke(dragRect)
+      context.setLineDash(phase: 0, lengths: [])
+
+      if let sr = stabilizedSmartRect, sr.width > 2, sr.height > 2 {
+        context.setFillColor(NSColor.systemRed.withAlphaComponent(0.08).cgColor)
+        context.fill(sr)
+
+        context.setStrokeColor(NSColor.systemRed.cgColor)
+        context.setLineWidth(1.0)
+        context.stroke(sr)
+
+        drawSegmentTicks(context: context, from: sr.minX, to: sr.maxX, fixed: sr.minY, isHorizontal: true)
+        drawSegmentTicks(context: context, from: sr.minX, to: sr.maxX, fixed: sr.maxY, isHorizontal: true)
+        drawSegmentTicks(context: context, from: sr.minY, to: sr.maxY, fixed: sr.minX, isHorizontal: false)
+        drawSegmentTicks(context: context, from: sr.minY, to: sr.maxY, fixed: sr.maxX, isHorizontal: false)
+
+        drawSmartBBoxLabels(context: context, rect: sr)
+      } else {
+        drawDimensionLabels(context: context, rect: dragRect)
+      }
 
       if showCrosshair {
-        drawCrosshairGuides(context: context, rect: selectionRect)
+        drawCrosshairGuides(context: context, rect: dragRect)
       }
     } else if showCrosshair {
       drawSnappedCrosshair(context: context, at: mouseLocation, snapRect: snappedRect)
     }
   }
 
-  private func rectFromPoints(_ a: NSPoint, _ b: NSPoint) -> NSRect {
+  func rectFromPoints(_ a: NSPoint, _ b: NSPoint) -> NSRect {
     let x = min(a.x, b.x)
     let y = min(a.y, b.y)
     let w = abs(b.x - a.x)
     let h = abs(b.y - a.y)
     return NSRect(x: x, y: y, width: w, height: h)
+  }
+
+  private func drawSmartBBoxLabels(context: CGContext, rect: NSRect) {
+    let width = Int(round(rect.width))
+    let height = Int(round(rect.height))
+
+    if width > 0 {
+      let label = "\(width)px"
+      drawLabel(label, at: NSPoint(x: rect.midX, y: rect.maxY + 10), context: context)
+    }
+
+    if height > 0 {
+      let label = "\(height)px"
+      drawLabel(label, at: NSPoint(x: rect.maxX + 10, y: rect.midY), context: context)
+    }
+
+    if width > 20 && height > 20 {
+      let combinedLabel = "\(width) \u{00D7} \(height)"
+      drawLabel(combinedLabel, at: NSPoint(x: rect.midX, y: rect.midY), context: context, isLarge: true)
+    }
   }
 
   private func drawDimensionLabels(context: CGContext, rect: NSRect) {
@@ -300,11 +412,6 @@ class OverlayView: NSView {
     context.strokePath()
 
     context.setLineDash(phase: 0, lengths: [])
-
-    drawSegmentTicks(context: context, from: rect.minX, to: rect.maxX, fixed: rect.minY, isHorizontal: true)
-    drawSegmentTicks(context: context, from: rect.minX, to: rect.maxX, fixed: rect.maxY, isHorizontal: true)
-    drawSegmentTicks(context: context, from: rect.minY, to: rect.maxY, fixed: rect.minX, isHorizontal: false)
-    drawSegmentTicks(context: context, from: rect.minY, to: rect.maxY, fixed: rect.maxX, isHorizontal: false)
   }
 }
 
@@ -316,6 +423,7 @@ class SnaplineWindow: NSWindow {
   private var screenshotCGImage: CGImage?
   private var tickTimer: Timer?
   private var tickDirection: Bool = true
+  private var edgeTolerance: Int = 40
 
   override var canBecomeKey: Bool { true }
   override var acceptsFirstResponder: Bool { true }
@@ -324,9 +432,10 @@ class SnaplineWindow: NSWindow {
     set {}
   }
 
-  func setup(showCrosshair: Bool) {
+  func setup(showCrosshair: Bool, tolerance: Int = 40) {
     guard let screen = NSScreen.main else { return }
     let frame = screen.frame
+    edgeTolerance = tolerance
 
     let cgImage = CGWindowListCreateImage(
       frame,
@@ -402,37 +511,15 @@ class SnaplineWindow: NSWindow {
     let point = event.locationInWindow
     overlayView?.startPoint = point
     overlayView?.currentPoint = point
+    overlayView?.smartRect = nil
+    overlayView?.stabilizedSmartRect = nil
     isDragging = true
     overlayView?.needsDisplay = true
   }
 
   override func mouseDragged(with event: NSEvent) {
-    guard isDragging, let start = overlayView?.startPoint else { return }
-    let raw = event.locationInWindow
-
-    let snapped: NSPoint
-    if let sampler = sampler {
-      var snappedX = raw.x
-      var snappedY = raw.y
-
-      if raw.x >= start.x {
-        snappedX = sampler.findEdgeRight(from: start.x, to: raw.x, at: start.y)
-      } else {
-        snappedX = sampler.findEdgeLeft(from: start.x, to: raw.x, at: start.y)
-      }
-
-      if raw.y >= start.y {
-        snappedY = sampler.findEdgeDown(from: start.y, to: raw.y, at: start.x)
-      } else {
-        snappedY = sampler.findEdgeUp(from: start.y, to: raw.y, at: start.x)
-      }
-
-      snapped = NSPoint(x: snappedX, y: snappedY)
-    } else {
-      snapped = raw
-    }
-
-    overlayView?.currentPoint = snapped
+    guard isDragging else { return }
+    overlayView?.currentPoint = event.locationInWindow
     overlayView?.needsDisplay = true
   }
 
@@ -440,21 +527,30 @@ class SnaplineWindow: NSWindow {
     guard isDragging else { return }
     isDragging = false
 
-    guard let start = overlayView?.startPoint,
-          let end = overlayView?.currentPoint else { return }
+    guard let start = overlayView?.startPoint, let end = overlayView?.currentPoint else { return }
 
-    let width = Int(abs(end.x - start.x))
-    let height = Int(abs(end.y - start.y))
+    let dragRect = overlayView?.rectFromPoints(start, end) ?? NSRect.zero
 
-    if width < 2 && height < 2 {
-      overlayView?.startPoint = nil
-      overlayView?.currentPoint = nil
-      overlayView?.needsDisplay = true
-      return
+    var finalRect = dragRect
+    if let sampler = sampler, dragRect.width > 4 || dragRect.height > 4 {
+      if let smart = sampler.findSmartBoundingBox(in: dragRect, tolerance: edgeTolerance) {
+        finalRect = smart
+      }
     }
 
-    print("\(width)x\(height)")
-    NSApplication.shared.terminate(nil)
+    let width = Int(round(finalRect.width))
+    let height = Int(round(finalRect.height))
+
+    if width >= 2 || height >= 2 {
+      overlayView?.completedRects.append(finalRect)
+      print("\(width)x\(height)")
+    }
+
+    overlayView?.startPoint = nil
+    overlayView?.currentPoint = nil
+    overlayView?.smartRect = nil
+    overlayView?.stabilizedSmartRect = nil
+    overlayView?.needsDisplay = true
   }
 
   override func mouseMoved(with event: NSEvent) {
@@ -485,7 +581,7 @@ class SnaplineWindow: NSWindow {
 class Snapline: NSObject {
   static let shared = Snapline()
 
-  func startMeasurement(showCrosshair: Bool = true) {
+  func startMeasurement(showCrosshair: Bool = true, tolerance: Int = 40) {
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
 
@@ -495,13 +591,14 @@ class Snapline: NSObject {
       backing: .buffered,
       defer: false
     )
-    window.setup(showCrosshair: showCrosshair)
+    window.setup(showCrosshair: showCrosshair, tolerance: tolerance)
 
     app.activate(ignoringOtherApps: true)
     app.run()
   }
 }
 
-@raycast func measureScreen(showCrosshair: Bool = true) {
-  return Snapline.shared.startMeasurement(showCrosshair: showCrosshair)
+@raycast func measureScreen(showCrosshair: Bool = true, edgeTolerance: String = "40") {
+  let tolerance = Int(edgeTolerance) ?? 40
+  return Snapline.shared.startMeasurement(showCrosshair: showCrosshair, tolerance: tolerance)
 }
