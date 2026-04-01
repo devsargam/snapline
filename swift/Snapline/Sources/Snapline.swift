@@ -480,6 +480,21 @@ class SnaplineWindow: NSWindow {
 
     NSCursor.crosshair.set()
 
+    let mouseScreen = NSEvent.mouseLocation
+    let mouseInWindow = NSPoint(x: mouseScreen.x - frame.origin.x, y: mouseScreen.y - frame.origin.y)
+    view.mouseLocation = mouseInWindow
+
+    if let sampler = sampler {
+      let leftEdge = sampler.findEdgeLeft(from: mouseInWindow.x, to: 0, at: mouseInWindow.y)
+      let rightEdge = sampler.findEdgeRight(from: mouseInWindow.x, to: frame.width, at: mouseInWindow.y)
+      let topEdge = sampler.findEdgeUp(from: mouseInWindow.y, to: frame.height, at: mouseInWindow.x)
+      let bottomEdge = sampler.findEdgeDown(from: mouseInWindow.y, to: 0, at: mouseInWindow.x)
+      view.snappedRect = NSRect(
+        x: leftEdge, y: bottomEdge,
+        width: rightEdge - leftEdge, height: topEdge - bottomEdge
+      )
+    }
+
     tickTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
       self?.animateTick()
     }
