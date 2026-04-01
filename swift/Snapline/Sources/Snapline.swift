@@ -199,9 +199,17 @@ class OverlayView: NSView {
     screenshot.draw(in: imageRect)
 
     for rect in completedRects {
+      let roundedPath = CGPath(roundedRect: rect, cornerWidth: 3, cornerHeight: 3, transform: nil)
+
+      context.setFillColor(NSColor.systemRed.withAlphaComponent(0.15).cgColor)
+      context.addPath(roundedPath)
+      context.fillPath()
+
       context.setStrokeColor(NSColor.systemRed.cgColor)
       context.setLineWidth(1.0)
-      context.stroke(rect)
+      context.addPath(roundedPath)
+      context.strokePath()
+
       drawSmartBBoxLabels(context: context, rect: rect)
     }
     if let start = startPoint, let current = currentPoint {
